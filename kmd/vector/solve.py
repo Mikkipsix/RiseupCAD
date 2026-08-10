@@ -111,35 +111,29 @@ def _candidates(nb,segs,reach=9.0):
 
 
 def _estimate_scale(numbers,segs):
-    """Find the dominant mm/px cluster from large dimensions before pairing small ones."""
+    """Estimate mm/px from a consistent cluster of large dimensions."""
     obs=[]
     for nb in numbers:
         if nb.value<1000: continue
+        # Large dimension text can sit at an endpoint, so symmetry is not a hard filter.
         for c in _candidates(nb,segs):
-            if c["symmetry"]>0.42: continue
             k=nb.value/c["span_px"]
             if 0.2<k<100: obs.append((nb.value,k,c))
     if len(obs)<2: return None
     best=None
     for _,k0,_ in obs:
         cluster=[o for o in obs if abs(o[1]-k0)/max(k0,1e-9)<=0.08]
-        score=(sum(math.log1p(o[0]) for o in cluster),len(cluster))
+        score=(len(cluster),sum(math.log1p(o[0]) for o in cluster))
         if best is None or score>best[0]: best=(score,cluster)
     cluster=best[1]
     if len(cluster)<2: return None
-    # robust weighted mean, giving larger dimensions more influence
     num=sum(o[0]*o[2]["span_px"] for o in cluster)
     den=sum(o[2]["span_px"]**2 for o in cluster)
     return num/den if den else None
 
 
 def build_dims(numbers,segs,reach=9.0,scale=None,diagnostics=False):
-    """Pair dimension numbers with extension lines using scale when available.
-
-    First estimate scale from large dimensions (>=1000 mm), then select small
-    dimensions by expected pixel span. This prevents 500/100 from attaching to
-    a neighboring 235/470 px span merely because its midpoint looks nicer.
-    """
+    """Pair dimension numbers with extension lines using scale when available."""
     if scale is None: scale=_estimate_scale(numbers,segs)
     out=[]
     for nb in numbers:
@@ -148,11 +142,10 @@ def build_dims(numbers,segs,reach=9.0,scale=None,diagnostics=False):
         target=(nb.value/scale) if scale else None
         for c in cands:
             c["target_error"]=(abs(c["span_px"]-target)/target) if target else None
-            c["score"]=(
-                (c["target_error"] if target else 0.0),
-                0 if c["inside"] else 1,
-                c["symmetry"],
-                c["span_px"])
+            if target:
+                c["score"]=(c["target_error"],0 if c["inside"] else 1,c["symmetry"],c["span_px"])
+            else:
+                c["score"]=(c["symmetry"],0 if c["inside"] else 1,c["span_px"])
         valid=[c for c in cands if target is None or c["target_error"]<=0.12]
         pool=valid or cands
         best=min(pool,key=lambda c:c["score"])
