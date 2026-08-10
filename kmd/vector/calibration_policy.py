@@ -1,22 +1,26 @@
 # -*- coding: utf-8 -*-
 """Calibration policy used by the raster vectorization package.
 
-The raw pairing stage can produce plausible false dimensions.  When several
-measurements support a scale, repeated dimension values are stronger evidence
-than a one-off value that happens to land in the same ratio cluster.
+The raw pairing stage can produce plausible false dimensions. Calibration
+should prefer a coherent scale supported by substantial dimensional evidence,
+while repeated values remain a useful tie-breaker rather than the primary
+criterion.
 """
 from __future__ import annotations
 
 import math
 from collections import Counter
+from statistics import median
 
 
 def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single=True):
-    """Calibrate while preferring clusters with repeated values.
+    """Calibrate using coherent ratio clusters with robust size support.
 
-    This keeps calibration generic: no drawing-specific values are embedded.
-    A cluster gets a bonus when the same dimension value occurs more than once,
-    which prevents isolated false pairings from displacing repeated evidence.
+    A cluster is evaluated by its median dimension value first, then by the
+    number of supporting measurements and repeated-value evidence. This avoids
+    letting three identical tiny OCR dimensions determine the global scale when
+    several much larger dimensions independently support another coherent scale.
+    No drawing-specific dimension values are embedded here.
     """
     if not dims:
         return None
@@ -30,17 +34,23 @@ def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single
     best = None
     for _, k0 in ks:
         inl = [(d, k) for d, k in ks if abs(k - k0) <= k0 * rel_tol]
+        if len(inl) < 2:
+            continue
+        values = [float(d.value) for d, _ in inl]
         counts = Counter(int(d.value) for d, _ in inl)
         repeated = sum(max(0, n - 1) for n in counts.values())
-        unique_large = sum(math.log1p(d.value) for d, _ in inl)
-        score = (repeated, len(inl), unique_large)
+        # Robustly prefer clusters representing the larger drawing geometry.
+        # Median avoids one isolated huge OCR value dominating the decision.
+        median_value = median(values)
+        total_log = sum(math.log1p(v) for v in values)
+        score = (median_value, len(inl), repeated, total_log)
         if best is None or score > best[0]:
             best = (score, inl)
 
-    inl = best[1]
-    if len(inl) < 2:
+    if best is None:
         return None
 
+    inl = best[1]
     num = sum(d.value * (d.b - d.a) for d, _ in inl)
     den = sum((d.b - d.a) ** 2 for d, _ in inl)
     if not den:
