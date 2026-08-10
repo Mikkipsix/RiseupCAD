@@ -2,6 +2,7 @@
 """End-to-end smoke test for the real RiseupCAD recognition pipeline."""
 from __future__ import annotations
 from pathlib import Path
+import json
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,26 @@ EXPECTED_NUMBERS = [100, 100, 500, 500, 6000, 6000, 6000, 15000]
 EXPECTED_DIMS = [6000, 6000, 6000, 15000]
 
 
+def _jsonable_dims(dims):
+    rows = []
+    for d in dims:
+        rows.append({
+            "value": int(d.value),
+            "vertical": bool(d.vertical),
+            "a": float(d.a),
+            "b": float(d.b),
+            "span_px": float(d.b - d.a),
+            "line": float(d.line),
+            "num": {
+                "x": float(d.num.x), "y": float(d.num.y),
+                "w": float(d.num.w), "h": float(d.num.h),
+                "conf": float(d.num.conf),
+            } if d.num is not None else None,
+            "meta": d.meta,
+        })
+    return rows
+
+
 def main():
     if not TEST_IMAGE.exists():
         raise SystemExit(f"Missing test fixture: {TEST_IMAGE}")
@@ -19,10 +40,35 @@ def main():
     from vector.pipeline import vectorize
     from vector.integration import export_recognition
 
+    OUT.mkdir(parents=True, exist_ok=True)
     result = vectorize(str(TEST_IMAGE), dpi=300, do_ocr=True)
     numbers = result.get("numbers", [])
     got = sorted(int(n.value) for n in numbers)
     print("OCR raw:", got)
+
+    # Always persist diagnostics before assertions so a failed E2E still
+    # leaves the candidate pairs and calibration inputs available as an artifact.
+    debug = {
+        "ocr": [
+            {"value": int(n.value), "x": float(n.x), "y": float(n.y),
+             "w": float(n.w), "h": float(n.h), "conf": float(n.conf),
+             "vertical": bool(n.vertical)}
+            for n in numbers
+        ],
+        "dims": _jsonable_dims(result.get("dims", [])),
+        "all_dims": _jsonable_dims(result.get("all_dims", [])),
+        "used_dims": _jsonable_dims(result.get("used_dims", [])),
+        "calib": result.get("calib"),
+        "scale": result.get("scale"),
+        "scale_source": result.get("scale_source"),
+    }
+    # Calibration contains Python id() values in some branches, so strip the
+    # non-serializable `used` set while retaining every numerical diagnostic.
+    if isinstance(debug["calib"], dict):
+        debug["calib"] = {k: v for k, v in debug["calib"].items() if k != "used"}
+    (OUT / "recognition_debug.json").write_text(
+        json.dumps(debug, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
 
     # OCR is intentionally allowed to return false positives. The real
     # contract is that dimension pairing/geometry must reject them rather
