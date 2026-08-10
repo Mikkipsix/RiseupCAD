@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [drawning10]
   push:
-    branches: [drawning10, dimension-pairing-v6]
+    branches: [drawning10, dimension-pairing-v6, dimension-pairing-v7]
 
 jobs:
   test:
@@ -35,6 +35,7 @@ jobs:
         with:
           name: riseupcad-e2e-output
           path: |
+            out_e2e/recognition_debug.json
             out_e2e/geometry.json
             out_e2e/qa_report.json
             out_e2e/output.dxf
