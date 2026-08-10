@@ -7,22 +7,20 @@ def seg(x1, y1, x2, y2, kind):
 
 
 def test_small_dimensions_follow_large_dimension_scale():
-    # One large 15000 span and one large 6000 span establish ~12.8 mm/px.
-    # Small dimensions then have intentionally tempting longer neighboring
-    # pairs. The correct choice is the pair matching the inferred scale.
+    # Vertical dimension numbers pair with horizontal extension lines.
+    # Large dimensions establish ~12.8 mm/px, then 500/100 use that scale.
     segs = [
-        # horizontal extension candidates for vertical dimensions
-        seg(100, 100, 100, 1274, "v"),       # 1174 px -> 15000
-        seg(1274, 100, 1274, 1274, "v"),
-        seg(200, 200, 200, 668, "v"),         # 468 px -> 6000
-        seg(668, 200, 668, 668, "v"),
-        seg(300, 300, 300, 339, "v"),         # 39 px -> 500
-        seg(339, 300, 339, 339, "v"),
-        seg(500, 500, 500, 508, "v"),         # 8 px -> 100
-        seg(508, 500, 508, 508, "v"),
-        # tempting neighboring long candidates covering the same dimension line
-        seg(535, 300, 535, 535, "v"),
-        seg(770, 300, 770, 535, "v"),
+        seg(600, 100, 800, 100, "h"),
+        seg(600, 1274, 800, 1274, "h"),
+        seg(350, 200, 520, 200, "h"),
+        seg(350, 668, 520, 668, "h"),
+        seg(300, 300, 340, 300, "h"),
+        seg(300, 339, 340, 339, "h"),
+        seg(495, 500, 515, 500, "h"),
+        seg(495, 508, 515, 508, "h"),
+        # tempting neighboring long candidates
+        seg(600, 300, 800, 300, "h"),
+        seg(600, 535, 800, 535, "h"),
     ]
     numbers = [
         Num(15000, 687, 100, 28, 60, 90, True),
@@ -41,8 +39,8 @@ def test_small_dimensions_follow_large_dimension_scale():
 
 
 def test_diagnostics_keep_candidate_pairs():
-    segs = [seg(100, 0, 100, 100, "v"), seg(139, 0, 139, 100, "v"),
-            seg(300, 0, 300, 100, "v"), seg(500, 0, 500, 100, "v")]
+    segs = [seg(100, 0, 200, 0, "h"), seg(100, 39, 200, 39, "h"),
+            seg(100, 200, 200, 200, "h"), seg(100, 500, 200, 500, "h")]
     dims = build_dims([Num(500, 119, 50, 20, 30, 90, True)], segs)
     assert dims
     meta = dims[0].meta
