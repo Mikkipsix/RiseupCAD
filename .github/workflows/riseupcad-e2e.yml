@@ -26,7 +26,7 @@ jobs:
         run: python -m pytest -q --ignore=test_ui.py
       - name: UI smoke test
         working-directory: kmd
-        run: python test_ui.py parts.yaml
+        run: python test_ui.py ../testdata/riseupcad_test_01.jpeg
       - name: Real drawing E2E
         run: python kmd/test_end_to_end.py
       - name: Publish recognition artifacts
