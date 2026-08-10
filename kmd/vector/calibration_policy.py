@@ -1,49 +1,40 @@
 # -*- coding: utf-8 -*-
-"""Calibration policy used by the raster vectorization package.
+"""Robust calibration policy for dimension pairing.
 
-The raw pairing stage can produce plausible false dimensions. Calibration
-should prefer a coherent scale supported by substantial dimensional evidence,
-while repeated values remain a useful tie-breaker rather than the primary
-criterion.
+The pairing stage may start with an imperfect provisional scale. Calibration
+therefore bootstraps from a dense cluster of value/span ratios. Repetition and
+large dimensions are tie-breakers, not the primary criterion.
 """
 from __future__ import annotations
 
 import math
 from collections import Counter
-from statistics import median
 
 
 def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single=True):
-    """Calibrate using coherent ratio clusters with robust size support.
-
-    A cluster is evaluated by its median dimension value first, then by the
-    number of supporting measurements and repeated-value evidence. This avoids
-    letting three identical tiny OCR dimensions determine the global scale when
-    several much larger dimensions independently support another coherent scale.
-    No drawing-specific dimension values are embedded here.
-    """
+    """Bootstrap calibration from the densest coherent value/span cluster."""
     if not dims:
         return None
     if len(dims) == 1:
         return solve_module.calibrate(dims, rel_tol=rel_tol, allow_single=allow_single)
 
-    ks = [(d, d.value / (d.b - d.a)) for d in dims if d.b > d.a]
-    if not ks:
+    ratios = [(d, d.value / (d.b - d.a)) for d in dims if d.b > d.a]
+    if not ratios:
         return None
 
     best = None
-    for _, k0 in ks:
-        inl = [(d, k) for d, k in ks if abs(k - k0) <= k0 * rel_tol]
+    for _, k0 in ratios:
+        inl = [(d, k) for d, k in ratios if abs(k - k0) <= max(k0 * rel_tol, 0.15)]
         if len(inl) < 2:
             continue
-        values = [float(d.value) for d, _ in inl]
-        counts = Counter(int(d.value) for d, _ in inl)
+        values = [int(d.value) for d, _ in inl]
+        counts = Counter(values)
         repeated = sum(max(0, n - 1) for n in counts.values())
-        # Robustly prefer clusters representing the larger drawing geometry.
-        # Median avoids one isolated huge OCR value dominating the decision.
-        median_value = median(values)
-        total_log = sum(math.log1p(v) for v in values)
-        score = (median_value, len(inl), repeated, total_log)
+        # Primary criterion: how many independent measurements support this
+        # scale. Only then use dimensional magnitude/repetition as tie-breakers.
+        total_log = sum(math.log1p(max(1, v)) for v in values)
+        max_value = max(values)
+        score = (len(inl), total_log, max_value, repeated)
         if best is None or score > best[0]:
             best = (score, inl)
 
@@ -66,7 +57,7 @@ def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single
         }
         for d, _ in inl
     ]
-    matches.sort(key=lambda m: -m["value"])
+    matches.sort(key=lambda m: (-m["value"], m["px"]))
     rms = math.sqrt(sum(m["resid"] ** 2 for m in matches) / len(matches))
     used = {id(d) for d, _ in inl}
     return {
@@ -76,13 +67,13 @@ def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single
         "n": len(matches),
         "used": used,
         "rejected": sorted({d.value for d in dims if id(d) not in used}),
-        "policy": "repeat-supported-cluster",
+        "policy": "dense-scale-cluster",
     }
 
 
 def install(solve_module):
     """Install the policy without changing the public solve.calibrate API."""
-    if getattr(solve_module, "_repeat_policy_installed", False):
+    if getattr(solve_module, "_dense_policy_installed", False):
         return
     original = solve_module.calibrate
 
@@ -94,4 +85,4 @@ def install(solve_module):
         )
 
     solve_module.calibrate = calibrate
-    solve_module._repeat_policy_installed = True
+    solve_module._dense_policy_installed = True
