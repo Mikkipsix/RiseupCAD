@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from . import assemble, detect, page, solve
+from .ocr_dedup import dedup_numbers
 
 HAS_OCR = solve.HAS_OCR
 load_page = page.load_page
@@ -27,7 +28,7 @@ def _calibration_dims(good, cal):
     """Return only dimensions that survived the final calibration cluster.
 
     Calibration matches are value-count based, but repeated physical values
-    can occur at different pixel spans.  Select each match against the closest
+    can occur at different pixel spans. Select each match against the closest
     unused refined dimension by both value and calibrated pixel span instead
     of taking the first matching value. This prevents a false 6000 candidate
     from replacing the actual 6000 anchor merely because it appears earlier
@@ -96,6 +97,7 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     ocr_k = None if up > 1 else (2,)
     numbers = (solve.ocr_numbers(bw, scales=ocr_k)
                if (do_ocr and solve.HAS_OCR) else [])
+    numbers = dedup_numbers(numbers)
     dims = solve.build_dims(numbers, segs)
     cal = solve.calibrate(dims)
 
