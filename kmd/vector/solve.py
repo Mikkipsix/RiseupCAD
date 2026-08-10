@@ -85,10 +85,17 @@ def ocr_numbers(bw,min_h=7,max_h=70,scales=None):
 
 
 def _candidates(nb,segs,reach=9.0):
-    """Return every geometrically plausible pair, not only the first winner."""
+    """Return every geometrically plausible pair on the dimension's normal axis."""
     want="h" if nb.vertical else "v"
-    cur=nb.x if want=="v" else nb.y
-    line=nb.x if nb.vertical else nb.y
+    # For a vertical dimension, extension lines are horizontal and their
+    # separation is measured on Y. For a horizontal dimension, extension
+    # lines are vertical and their separation is measured on X.
+    if want=="h":
+        cur=nb.y
+        line=nb.x
+    else:
+        cur=nb.x
+        line=nb.y
     reach_n=max(reach,1.6*(nb.w if nb.vertical else nb.h))
     cands=[]
     for s in segs:
