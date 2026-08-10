@@ -33,6 +33,20 @@ def _jsonable_dims(dims):
     return rows
 
 
+def _jsonable_segments(segs):
+    return [
+        {
+            "x1": float(s.x1), "y1": float(s.y1),
+            "x2": float(s.x2), "y2": float(s.y2),
+            "kind": s.kind,
+            "width": float(s.width),
+            "fill": float(s.fill),
+            "role": s.role,
+        }
+        for s in segs
+    ]
+
+
 def main():
     if not TEST_IMAGE.exists():
         raise SystemExit(f"Missing test fixture: {TEST_IMAGE}")
@@ -55,6 +69,7 @@ def main():
              "vertical": bool(n.vertical)}
             for n in numbers
         ],
+        "segments": _jsonable_segments(result.get("segments", [])),
         "dims": _jsonable_dims(result.get("dims", [])),
         "all_dims": _jsonable_dims(result.get("all_dims", [])),
         "used_dims": _jsonable_dims(result.get("used_dims", [])),
