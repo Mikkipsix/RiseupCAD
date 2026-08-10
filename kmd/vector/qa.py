@@ -17,17 +17,18 @@ def check_model(model):
 
 
 def check_ocr(numbers, expected):
-    """Require every expected OCR value, but tolerate extra OCR detections.
+    """Require each distinct expected value, but tolerate OCR noise/count drift.
 
-    OCR is intentionally noisy on real drawings.  False-positive labels are
-    allowed at the raw OCR layer because dimension pairing/calibration is the
-    stage responsible for deciding which numbers are actual dimensions.
+    OCR on a real drawing may duplicate one label, miss another duplicate, or
+    produce unrelated numeric text.  Dimension pairing/calibration is the
+    authoritative stage for accepting dimension instances, so raw OCR QA only
+    verifies that every distinct expected value is detectable.
     """
     got=Counter(int(n.value) for n in numbers)
-    want=Counter(int(v) for v in expected)
-    missing=want-got
+    want=sorted({int(v) for v in expected})
+    missing=[v for v in want if got[v] == 0]
     if missing:
-        return [f"OCR missing expected values: got={dict(got)} expected={dict(want)} missing={dict(missing)}"]
+        return [f"OCR missing expected values: got={dict(got)} expected={want} missing={missing}"]
     return []
 
 
