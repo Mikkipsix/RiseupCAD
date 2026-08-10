@@ -12,12 +12,56 @@ load_page = page.load_page
 page_count = page.page_count
 
 
+def _dim_signature(d):
+    """Stable identity for a refined dimension across reconstruction passes.
+
+    ``calibrate()`` historically returned ``id(d)`` values.  That is unsafe
+    here because ``refine_dims()`` intentionally creates fresh ``Dim``
+    instances.  The geometry/value signature survives those passes.
+    """
+    return (
+        int(d.value),
+        bool(d.vertical),
+        round(float(d.a), 1),
+        round(float(d.b), 1),
+        round(float(d.line), 1),
+    )
+
+
 def _calibration_dims(good, cal):
-    """Return only dimensions that survived the final calibration cluster."""
+    """Return only dimensions that survived the final calibration cluster.
+
+    Prefer the numerical matches emitted by calibration instead of Python
+    object identity.  This keeps the selection valid after ``refine_dims``
+    rebuilds ``Dim`` objects and also preserves duplicate dimensions by count.
+    """
     if not good or not cal:
         return []
+
+    matches = cal.get("matches") or []
+    wanted = {}
+    for m in matches:
+        try:
+            value = int(m["value"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        wanted[value] = wanted.get(value, 0) + 1
+
+    if wanted:
+        selected = []
+        for d in good:
+            if wanted.get(int(d.value), 0) <= 0:
+                continue
+            selected.append(d)
+            wanted[int(d.value)] -= 1
+        return selected
+
+    # Backward-compatible fallback for calibration dictionaries created by
+    # older callers.  Signature matching is stable; id() matching is not.
     used = cal.get("used", set())
-    return [d for d in good if id(d) in used]
+    if used:
+        return [d for d in good if id(d) in used]
+    return []
 
 
 def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
@@ -60,7 +104,19 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     if scale != 1.0:
         good = solve.refine_dims(numbers, segs, scale)
         if not good and cal:
-            good = [d for d in dims if id(d) in cal["used"]]
+            # ``refine_dims`` may legitimately reject every candidate.  Use
+            # the calibration values as a multiset, not id(d), because the
+            # refined and initial dimensions are different Python objects.
+            wanted = {}
+            for m in cal.get("matches", []):
+                value = int(m["value"])
+                wanted[value] = wanted.get(value, 0) + 1
+            good = []
+            for d in dims:
+                value = int(d.value)
+                if wanted.get(value, 0) > 0:
+                    good.append(d)
+                    wanted[value] -= 1
         if cal and not cal.get("single"):
             k2 = solve.calibrate(good) if len(good) >= 2 else None
             if k2 and k2["rms"] <= cal["rms"] + 0.5 and not scale_override:
