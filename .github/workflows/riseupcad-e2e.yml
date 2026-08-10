@@ -18,7 +18,10 @@ jobs:
         run: python -m pip install -r kmd/requirements.txt pytest
       - name: Unit tests
         working-directory: kmd
-        run: python -m pytest -q
+        run: python -m pytest -q --ignore=test_ui.py
+      - name: UI smoke test
+        working-directory: kmd
+        run: python test_ui.py parts.yaml
       - name: Real drawing E2E
         run: python kmd/test_end_to_end.py
       - name: Publish recognition artifacts
