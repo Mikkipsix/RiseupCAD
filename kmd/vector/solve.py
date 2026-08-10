@@ -24,6 +24,11 @@ def _probe_ocr():
 
 HAS_OCR, pytesseract = _probe_ocr()
 NUM_CFG = "--psm 11 -c tessedit_char_whitelist=0123456789"
+NUM_CFGS = (
+    NUM_CFG,
+    "--psm 6 -c tessedit_char_whitelist=0123456789",
+    "--psm 12 -c tessedit_char_whitelist=0123456789",
+)
 MIN_VALUE, MIN_CONF, PAD = 10, 35.0, 20
 
 
@@ -69,11 +74,11 @@ def _prep(bw, k):
     return cv2.copyMakeBorder(img, PAD, PAD, PAD, PAD, cv2.BORDER_CONSTANT, value=255)
 
 
-def _boxes(img):
+def _boxes(img, config=NUM_CFG):
     if pytesseract is None:
         return []
     try:
-        d = pytesseract.image_to_data(img, config=NUM_CFG, output_type=pytesseract.Output.DICT)
+        d = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
     except Exception:
         return []
     out = []
@@ -95,11 +100,13 @@ def ocr_numbers(bw, min_h=7, max_h=70, scales=None):
     for k in (scales or ocr_scales(bw)):
         img = _prep(bw, k)
         H = img.shape[0]
-        for v, x, y, w, h, c in _boxes(img):
-            found.append(Num(v, (x + w / 2 - PAD) / k, (y + h / 2 - PAD) / k, w / k, h / k, c, False))
-        for v, x, y, w, h, c in _boxes(cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)):
-            rx, ry = x + w / 2, y + h / 2
-            found.append(Num(v, (ry - PAD) / k, (H - 1 - rx - PAD) / k, h / k, w / k, c, True))
+        for config in NUM_CFGS:
+            for v, x, y, w, h, c in _boxes(img, config):
+                found.append(Num(v, (x + w / 2 - PAD) / k, (y + h / 2 - PAD) / k, w / k, h / k, c, False))
+            rotated = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+            for v, x, y, w, h, c in _boxes(rotated, config):
+                rx, ry = x + w / 2, y + h / 2
+                found.append(Num(v, (ry - PAD) / k, (H - 1 - rx - PAD) / k, h / k, w / k, c, True))
     hh, ww = bw.shape
     out = []
     for f in sorted(found, key=lambda n: -n.conf):
