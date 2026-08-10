@@ -115,7 +115,6 @@ def _estimate_scale(numbers,segs):
     obs=[]
     for nb in numbers:
         if nb.value<1000: continue
-        # Large dimension text can sit at an endpoint, so symmetry is not a hard filter.
         for c in _candidates(nb,segs):
             k=nb.value/c["span_px"]
             if 0.2<k<100: obs.append((nb.value,k,c))
@@ -145,7 +144,7 @@ def build_dims(numbers,segs,reach=9.0,scale=None,diagnostics=False):
             if target:
                 c["score"]=(c["target_error"],0 if c["inside"] else 1,c["symmetry"],c["span_px"])
             else:
-                c["score"]=(c["symmetry"],0 if c["inside"] else 1,c["span_px"])
+                c["score"]=(0 if c["inside"] else 1,c["center_error_px"],c["symmetry"],c["span_px"])
         valid=[c for c in cands if target is None or c["target_error"]<=0.12]
         pool=valid or cands
         best=min(pool,key=lambda c:c["score"])
