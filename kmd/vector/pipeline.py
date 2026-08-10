@@ -56,8 +56,6 @@ def _calibration_dims(good, cal):
             wanted[int(d.value)] -= 1
         return selected
 
-    # Backward-compatible fallback for calibration dictionaries created by
-    # older callers.  Signature matching is stable; id() matching is not.
     used = cal.get("used", set())
     if used:
         return [d for d in good if id(d) in used]
@@ -104,9 +102,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     if scale != 1.0:
         good = solve.refine_dims(numbers, segs, scale)
         if not good and cal:
-            # ``refine_dims`` may legitimately reject every candidate.  Use
-            # the calibration values as a multiset, not id(d), because the
-            # refined and initial dimensions are different Python objects.
             wanted = {}
             for m in cal.get("matches", []):
                 value = int(m["value"])
@@ -119,7 +114,19 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
                     wanted[value] -= 1
         if cal and not cal.get("single"):
             k2 = solve.calibrate(good) if len(good) >= 2 else None
-            if k2 and k2["rms"] <= cal["rms"] + 0.5 and not scale_override:
+            # The second calibration pass may legitimately increase RMS when
+            # it restores repeated physical dimensions that were absent from
+            # the first provisional cluster.  Prefer a larger, repeat-supported
+            # calibration cluster over a smaller lower-RMS cluster, while still
+            # keeping the acceptance bounded to avoid admitting arbitrary OCR.
+            larger_repeat_cluster = (
+                k2 is not None
+                and k2.get("n", 0) > cal.get("n", 0)
+                and k2.get("policy") == "anchor-repeat-large"
+                and k2.get("rms", float("inf")) <= 25.0
+            )
+            if (k2 and (k2["rms"] <= cal["rms"] + 0.5 or larger_repeat_cluster)
+                    and not scale_override):
                 scale = k2["scale"]
                 cal = k2
                 source = (f'подобран по {k2["n"]} размерам, '
@@ -128,10 +135,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     else:
         good = []
 
-    # good = all successfully refined dimensions used by the CAD model.
-    # used_dims = only the dimensions that actually support final calibration.
-    # This distinction prevents false OCR values such as 3000 from becoming
-    # calibration constraints while keeping valid small dimensions in the model.
     used_dims = _calibration_dims(good, cal)
 
     model = assemble.build_model(segs, circles, good, numbers, scale,
