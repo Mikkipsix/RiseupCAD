@@ -12,12 +12,18 @@ load_page = page.load_page
 page_count = page.page_count
 
 
+def _calibration_dims(good, cal):
+    """Return only dimensions that survived the final calibration cluster."""
+    if not good or not cal:
+        return []
+    used = cal.get("used", set())
+    return [d for d in good if id(d) in used]
+
+
 def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
               scale_override=None, **kw):
     page_no = int(kw.pop("page", page_no) or 0)
     gray = page.load_page(path, dpi=dpi, page=page_no)
-    # увеличение решается по толщине штриха, а не по размеру листа:
-    # скан от руки увеличивать не надо, тонкую схему из CAD - надо
     up = page.upscale_factor(page.binarize(gray))
     if up > 1:
         gray = page.upscale(gray, up)
@@ -26,20 +32,13 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     bw, gray, ang = page.deskew(bw, gray)
 
     segs = detect.detect_segments(bw, min_len=min_len)
-    # штрихи букв Хаф тоже принимает за отрезки; выкидываем всё, что
-    # целиком лежит внутри распознанной надписи
     boxes = detect.text_boxes(bw) if do_ocr and solve.HAS_OCR else []
     H0, W0 = bw.shape
-    # рамка надписи не может занимать пол-листа: такие «слова» tesseract
-    # выдумывает на самой геометрии чертежа
     boxes = [b for b in boxes if b[3] <= 0.10 * H0 and b[2] <= 0.35 * W0]
     segs = [s for s in segs if not _in_text(s, boxes)]
     thr = detect.split_by_weight(segs)
     circles = detect.circles_at_crosses(bw, segs)
     arcs = detect.detect_arcs_all(bw, boxes=boxes)
-    # на скане от руки хватает одного увеличения - лишние проходы дают
-    # ложные числа и сбивают подбор масштаба; многомасштабный разбор
-    # нужен только там, где шрифт мелкий, то есть на тонких схемах
     ocr_k = None if up > 1 else (2,)
     numbers = (solve.ocr_numbers(bw, scales=ocr_k)
                if (do_ocr and solve.HAS_OCR) else [])
@@ -59,7 +58,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         source = "не определён, координаты в пикселях"
 
     if scale != 1.0:
-        # зная масштаб, привязываем размеры повторно и строже
         good = solve.refine_dims(numbers, segs, scale)
         if not good and cal:
             good = [d for d in dims if id(d) in cal["used"]]
@@ -74,6 +72,12 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     else:
         good = []
 
+    # good = all successfully refined dimensions used by the CAD model.
+    # used_dims = only the dimensions that actually support final calibration.
+    # This distinction prevents false OCR values such as 3000 from becoming
+    # calibration constraints while keeping valid small dimensions in the model.
+    used_dims = _calibration_dims(good, cal)
+
     model = assemble.build_model(segs, circles, good, numbers, scale,
                                  gray.shape[0], arcs=arcs)
     opts = []
@@ -86,8 +90,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         opts.append({"value": d.value, "px": round(d.b - d.a, 1),
                      "scale": round(d.value / (d.b - d.a), 5)})
 
-    # длины самых заметных линий - для ручной калибровки, когда OCR
-    # недоступен: пользователь указывает известный размер одной из них
     lens, seen_len = [], set()
     for x in sorted(segs, key=lambda x: -x.length):
         if x.role == "leader" or x.length < 20:
@@ -105,7 +107,8 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     return {"gray": gray, "bw": bw, "segments": segs, "circles": circles,
             "arcs": arcs, "line_options": lens, "has_ocr": solve.HAS_OCR,
             "upscale": up,
-            "numbers": numbers, "dims": dims, "used_dims": good,
+            "numbers": numbers, "dims": dims, "used_dims": used_dims,
+            "all_dims": good,
             "calib": cal, "options": opts, "scale": scale,
             "scale_source": source, "deskew": round(ang, 2),
             "weight_threshold": round(thr, 2), "model": model,
