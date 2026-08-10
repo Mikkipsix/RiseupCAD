@@ -1,0 +1,32 @@
+name: RiseupCAD E2E
+
+on:
+  pull_request:
+    branches: [drawning10]
+  push:
+    branches: [drawning10, dimension-pairing-v6]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r kmd/requirements.txt pytest
+      - name: Unit tests
+        run: python -m pytest -q kmd
+      - name: Real drawing E2E
+        run: python kmd/test_end_to_end.py
+      - name: Publish recognition artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: riseupcad-e2e-output
+          path: |
+            out_e2e/geometry.json
+            out_e2e/qa_report.json
+            out_e2e/output.dxf
+          if-no-files-found: ignore
