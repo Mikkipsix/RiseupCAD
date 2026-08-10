@@ -12,12 +12,72 @@ load_page = page.load_page
 page_count = page.page_count
 
 
+def _dim_signature(d):
+    """Stable identity for a refined dimension across reconstruction passes."""
+    return (
+        int(d.value),
+        bool(d.vertical),
+        round(float(d.a), 1),
+        round(float(d.b), 1),
+        round(float(d.line), 1),
+    )
+
+
+def _calibration_dims(good, cal):
+    """Return only dimensions that survived the final calibration cluster.
+
+    Calibration matches are value-count based, but repeated physical values
+    can occur at different pixel spans.  Select each match against the closest
+    unused refined dimension by both value and calibrated pixel span instead
+    of taking the first matching value. This prevents a false 6000 candidate
+    from replacing the actual 6000 anchor merely because it appears earlier
+    in OCR order.
+    """
+    if not good or not cal:
+        return []
+
+    matches = cal.get("matches") or []
+    if matches:
+        remaining = list(good)
+        selected = []
+        for m in matches:
+            try:
+                value = int(m["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            try:
+                target_px = float(m["px"])
+            except (KeyError, TypeError, ValueError):
+                target_px = None
+
+            candidates = [d for d in remaining if int(d.value) == value]
+            if not candidates:
+                continue
+
+            def score(d):
+                span_error = (abs((d.b - d.a) - target_px)
+                              if target_px is not None else 0.0)
+                return (
+                    span_error,
+                    0 if bool(d.vertical) == bool(m.get("vertical", d.vertical)) else 1,
+                    abs(float(d.line) - float(m.get("line", d.line))),
+                )
+
+            best = min(candidates, key=score)
+            selected.append(best)
+            remaining.remove(best)
+        return selected
+
+    used = cal.get("used", set())
+    if used:
+        return [d for d in good if id(d) in used]
+    return []
+
+
 def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
               scale_override=None, **kw):
     page_no = int(kw.pop("page", page_no) or 0)
     gray = page.load_page(path, dpi=dpi, page=page_no)
-    # увеличение решается по толщине штриха, а не по размеру листа:
-    # скан от руки увеличивать не надо, тонкую схему из CAD - надо
     up = page.upscale_factor(page.binarize(gray))
     if up > 1:
         gray = page.upscale(gray, up)
@@ -26,20 +86,13 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     bw, gray, ang = page.deskew(bw, gray)
 
     segs = detect.detect_segments(bw, min_len=min_len)
-    # штрихи букв Хаф тоже принимает за отрезки; выкидываем всё, что
-    # целиком лежит внутри распознанной надписи
     boxes = detect.text_boxes(bw) if do_ocr and solve.HAS_OCR else []
     H0, W0 = bw.shape
-    # рамка надписи не может занимать пол-листа: такие «слова» tesseract
-    # выдумывает на самой геометрии чертежа
     boxes = [b for b in boxes if b[3] <= 0.10 * H0 and b[2] <= 0.35 * W0]
     segs = [s for s in segs if not _in_text(s, boxes)]
     thr = detect.split_by_weight(segs)
     circles = detect.circles_at_crosses(bw, segs)
     arcs = detect.detect_arcs_all(bw, boxes=boxes)
-    # на скане от руки хватает одного увеличения - лишние проходы дают
-    # ложные числа и сбивают подбор масштаба; многомасштабный разбор
-    # нужен только там, где шрифт мелкий, то есть на тонких схемах
     ocr_k = None if up > 1 else (2,)
     numbers = (solve.ocr_numbers(bw, scales=ocr_k)
                if (do_ocr and solve.HAS_OCR) else [])
@@ -59,13 +112,28 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         source = "не определён, координаты в пикселях"
 
     if scale != 1.0:
-        # зная масштаб, привязываем размеры повторно и строже
         good = solve.refine_dims(numbers, segs, scale)
         if not good and cal:
-            good = [d for d in dims if id(d) in cal["used"]]
+            wanted = {}
+            for m in cal.get("matches", []):
+                value = int(m["value"])
+                wanted[value] = wanted.get(value, 0) + 1
+            good = []
+            for d in dims:
+                value = int(d.value)
+                if wanted.get(value, 0) > 0:
+                    good.append(d)
+                    wanted[value] -= 1
         if cal and not cal.get("single"):
             k2 = solve.calibrate(good) if len(good) >= 2 else None
-            if k2 and k2["rms"] <= cal["rms"] + 0.5 and not scale_override:
+            larger_repeat_cluster = (
+                k2 is not None
+                and k2.get("n", 0) > cal.get("n", 0)
+                and k2.get("policy") == "anchor-repeat-large"
+                and k2.get("rms", float("inf")) <= 25.0
+            )
+            if (k2 and (k2["rms"] <= cal["rms"] + 0.5 or larger_repeat_cluster)
+                    and not scale_override):
                 scale = k2["scale"]
                 cal = k2
                 source = (f'подобран по {k2["n"]} размерам, '
@@ -73,6 +141,8 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
                 good = solve.refine_dims(numbers, segs, scale)
     else:
         good = []
+
+    used_dims = _calibration_dims(good, cal)
 
     model = assemble.build_model(segs, circles, good, numbers, scale,
                                  gray.shape[0], arcs=arcs)
@@ -86,8 +156,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         opts.append({"value": d.value, "px": round(d.b - d.a, 1),
                      "scale": round(d.value / (d.b - d.a), 5)})
 
-    # длины самых заметных линий - для ручной калибровки, когда OCR
-    # недоступен: пользователь указывает известный размер одной из них
     lens, seen_len = [], set()
     for x in sorted(segs, key=lambda x: -x.length):
         if x.role == "leader" or x.length < 20:
@@ -105,7 +173,8 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     return {"gray": gray, "bw": bw, "segments": segs, "circles": circles,
             "arcs": arcs, "line_options": lens, "has_ocr": solve.HAS_OCR,
             "upscale": up,
-            "numbers": numbers, "dims": dims, "used_dims": good,
+            "numbers": numbers, "dims": dims, "used_dims": used_dims,
+            "all_dims": good,
             "calib": cal, "options": opts, "scale": scale,
             "scale_source": source, "deskew": round(ang, 2),
             "weight_threshold": round(thr, 2), "model": model,
@@ -130,9 +199,6 @@ def to_dxf(res, path, put_text=True, **kw):
     return assemble.to_dxf(model, path)
 
 
-# =====================================================================
-#  Контроль
-# =====================================================================
 def overlay_png(res, max_side=1500):
     img = cv2.cvtColor(res["gray"], cv2.COLOR_GRAY2BGR)
     img = (img * 0.30 + 170).astype(np.uint8)
@@ -190,8 +256,7 @@ def summary(res):
         f'размеров DIMENSION {len(m.dims)}',
     ]
     if not res.get("has_ocr", True):
-        out += ["",
-                "Движок tesseract не установлен, числа с чертежа не читаются.",
+        out += ["", "Движок tesseract не установлен, числа с чертежа не читаются.",
                 "Геометрия распознана, но масштаб задать нечем: укажите его",
                 "вручную или откалибруйте по линии с известной длиной."]
     c = res["calib"]
