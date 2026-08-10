@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Robust calibration policy for dimension pairing.
-
-The pairing stage may start with an imperfect provisional scale. Calibration
-therefore bootstraps from coherent large/repeated dimension anchors. Small
-one-off OCR values can be geometrically plausible and even lie on the same
-scale, but they must not be allowed to define the final calibration cluster.
-"""
+"""Robust calibration policy for dimension pairing."""
 from __future__ import annotations
 
 import math
@@ -37,15 +31,7 @@ def _dedupe_dims(dims):
 
 
 def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single=True):
-    """Calibrate from repeated/large anchors, not every plausible OCR value.
-
-    A real drawing may contain a false OCR value whose paired span happens to
-    produce exactly the same mm/px ratio as the real dimensions.  Treating
-    every inlier equally therefore lets a one-off false positive become part
-    of the calibration cluster. Repeated dimension values are stronger
-    evidence; the largest dimension is retained as a second anchor when it
-    is unique.
-    """
+    """Calibrate from repeated/large anchors, not every plausible OCR value."""
     if not dims:
         return None
     if len(dims) == 1:
@@ -63,18 +49,16 @@ def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single
 
     best = None
     for _, k0 in ratios:
-        inl = [(d, k) for d, k in ratios
-               if abs(k - k0) <= max(k0 * rel_tol, 0.15)]
+        inl = [(d, k) for d, k in ratios if abs(k - k0) <= max(k0 * rel_tol, 0.15)]
         if len(inl) < 2:
             continue
         anchors = [(d, k) for d, k in inl if int(d.value) in anchor_values]
         if len(anchors) < 2:
             continue
-        # Anchor support is primary. Total inliers are only a secondary
-        # criterion because small one-off false positives can be in-scale.
         anchor_log = sum(math.log1p(max(1, int(d.value))) for d, _ in anchors)
         total_log = sum(math.log1p(max(1, int(d.value))) for d, _ in inl)
-        score = (len(anchors), anchor_log, len(inl), total_log, max(int(d.value) for d, _ in anchors))
+        score = (len(anchors), anchor_log, len(inl), total_log,
+                 max(int(d.value) for d, _ in anchors))
         if best is None or score > best[0]:
             best = (score, anchors, inl)
 
@@ -112,17 +96,32 @@ def calibrate_with_repeat_support(solve_module, dims, rel_tol=0.05, allow_single
 
 
 def install(solve_module):
-    """Install the policy without changing the public solve.calibrate API."""
+    """Install calibration and normalize OCR orientation from the text box shape."""
     if getattr(solve_module, "_dense_policy_installed", False):
         return
-    original = solve_module.calibrate
+
+    original_calibrate = solve_module.calibrate
+    original_ocr_numbers = solve_module.ocr_numbers
 
     def calibrate(dims, rel_tol=0.05, allow_single=True):
         if len(dims) <= 1:
-            return original(dims, rel_tol=rel_tol, allow_single=allow_single)
+            return original_calibrate(dims, rel_tol=rel_tol, allow_single=allow_single)
         return calibrate_with_repeat_support(
             solve_module, dims, rel_tol=rel_tol, allow_single=allow_single
         )
 
+    def ocr_numbers(*args, **kwargs):
+        numbers = original_ocr_numbers(*args, **kwargs)
+        # Normal-pass detections can lose the orientation flag. The dimension
+        # text box itself is a reliable signal when its aspect ratio is clear.
+        for n in numbers:
+            w = max(float(n.w), 1e-6)
+            h = max(float(n.h), 1e-6)
+            ratio = max(w, h) / min(w, h)
+            if ratio >= 1.25:
+                n.vertical = h > w
+        return numbers
+
     solve_module.calibrate = calibrate
+    solve_module.ocr_numbers = ocr_numbers
     solve_module._dense_policy_installed = True

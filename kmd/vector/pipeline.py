@@ -13,12 +13,7 @@ page_count = page.page_count
 
 
 def _dim_signature(d):
-    """Stable identity for a refined dimension across reconstruction passes.
-
-    ``calibrate()`` historically returned ``id(d)`` values.  That is unsafe
-    here because ``refine_dims()`` intentionally creates fresh ``Dim``
-    instances.  The geometry/value signature survives those passes.
-    """
+    """Stable identity for a refined dimension across reconstruction passes."""
     return (
         int(d.value),
         bool(d.vertical),
@@ -31,29 +26,46 @@ def _dim_signature(d):
 def _calibration_dims(good, cal):
     """Return only dimensions that survived the final calibration cluster.
 
-    Prefer the numerical matches emitted by calibration instead of Python
-    object identity.  This keeps the selection valid after ``refine_dims``
-    rebuilds ``Dim`` objects and also preserves duplicate dimensions by count.
+    Calibration matches are value-count based, but repeated physical values
+    can occur at different pixel spans.  Select each match against the closest
+    unused refined dimension by both value and calibrated pixel span instead
+    of taking the first matching value. This prevents a false 6000 candidate
+    from replacing the actual 6000 anchor merely because it appears earlier
+    in OCR order.
     """
     if not good or not cal:
         return []
 
     matches = cal.get("matches") or []
-    wanted = {}
-    for m in matches:
-        try:
-            value = int(m["value"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        wanted[value] = wanted.get(value, 0) + 1
-
-    if wanted:
+    if matches:
+        remaining = list(good)
         selected = []
-        for d in good:
-            if wanted.get(int(d.value), 0) <= 0:
+        for m in matches:
+            try:
+                value = int(m["value"])
+            except (KeyError, TypeError, ValueError):
                 continue
-            selected.append(d)
-            wanted[int(d.value)] -= 1
+            try:
+                target_px = float(m["px"])
+            except (KeyError, TypeError, ValueError):
+                target_px = None
+
+            candidates = [d for d in remaining if int(d.value) == value]
+            if not candidates:
+                continue
+
+            def score(d):
+                span_error = (abs((d.b - d.a) - target_px)
+                              if target_px is not None else 0.0)
+                return (
+                    span_error,
+                    0 if bool(d.vertical) == bool(m.get("vertical", d.vertical)) else 1,
+                    abs(float(d.line) - float(m.get("line", d.line))),
+                )
+
+            best = min(candidates, key=score)
+            selected.append(best)
+            remaining.remove(best)
         return selected
 
     used = cal.get("used", set())
@@ -114,11 +126,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
                     wanted[value] -= 1
         if cal and not cal.get("single"):
             k2 = solve.calibrate(good) if len(good) >= 2 else None
-            # The second calibration pass may legitimately increase RMS when
-            # it restores repeated physical dimensions that were absent from
-            # the first provisional cluster.  Prefer a larger, repeat-supported
-            # calibration cluster over a smaller lower-RMS cluster, while still
-            # keeping the acceptance bounded to avoid admitting arbitrary OCR.
             larger_repeat_cluster = (
                 k2 is not None
                 and k2.get("n", 0) > cal.get("n", 0)
@@ -192,9 +199,6 @@ def to_dxf(res, path, put_text=True, **kw):
     return assemble.to_dxf(model, path)
 
 
-# =====================================================================
-#  Контроль
-# =====================================================================
 def overlay_png(res, max_side=1500):
     img = cv2.cvtColor(res["gray"], cv2.COLOR_GRAY2BGR)
     img = (img * 0.30 + 170).astype(np.uint8)
@@ -252,8 +256,7 @@ def summary(res):
         f'размеров DIMENSION {len(m.dims)}',
     ]
     if not res.get("has_ocr", True):
-        out += ["",
-                "Движок tesseract не установлен, числа с чертежа не читаются.",
+        out += ["", "Движок tesseract не установлен, числа с чертежа не читаются.",
                 "Геометрия распознана, но масштаб задать нечем: укажите его",
                 "вручную или откалибруйте по линии с известной длиной."]
     c = res["calib"]
