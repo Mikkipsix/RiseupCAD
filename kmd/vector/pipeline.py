@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from . import assemble, detect, page, solve
+from .ocr_dedup import dedup_numbers
 
 HAS_OCR = solve.HAS_OCR
 load_page = page.load_page
@@ -15,27 +16,15 @@ page_count = page.page_count
 def _dim_signature(d):
     """Stable identity for a refined dimension across reconstruction passes."""
     return (
-        int(d.value),
-        bool(d.vertical),
-        round(float(d.a), 1),
-        round(float(d.b), 1),
-        round(float(d.line), 1),
+        int(d.value), bool(d.vertical), round(float(d.a), 1),
+        round(float(d.b), 1), round(float(d.line), 1),
     )
 
 
 def _calibration_dims(good, cal):
-    """Return only dimensions that survived the final calibration cluster.
-
-    Calibration matches are value-count based, but repeated physical values
-    can occur at different pixel spans.  Select each match against the closest
-    unused refined dimension by both value and calibrated pixel span instead
-    of taking the first matching value. This prevents a false 6000 candidate
-    from replacing the actual 6000 anchor merely because it appears earlier
-    in OCR order.
-    """
+    """Return only dimensions that survived the final calibration cluster."""
     if not good or not cal:
         return []
-
     matches = cal.get("matches") or []
     if matches:
         remaining = list(good)
@@ -49,29 +38,21 @@ def _calibration_dims(good, cal):
                 target_px = float(m["px"])
             except (KeyError, TypeError, ValueError):
                 target_px = None
-
             candidates = [d for d in remaining if int(d.value) == value]
             if not candidates:
                 continue
-
             def score(d):
                 span_error = (abs((d.b - d.a) - target_px)
                               if target_px is not None else 0.0)
-                return (
-                    span_error,
-                    0 if bool(d.vertical) == bool(m.get("vertical", d.vertical)) else 1,
-                    abs(float(d.line) - float(m.get("line", d.line))),
-                )
-
+                return (span_error,
+                        0 if bool(d.vertical) == bool(m.get("vertical", d.vertical)) else 1,
+                        abs(float(d.line) - float(m.get("line", d.line))))
             best = min(candidates, key=score)
             selected.append(best)
             remaining.remove(best)
         return selected
-
     used = cal.get("used", set())
-    if used:
-        return [d for d in good if id(d) in used]
-    return []
+    return [d for d in good if id(d) in used] if used else []
 
 
 def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
@@ -84,7 +65,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         min_len = max(8, int(min_len * up))
     bw = page.binarize(gray)
     bw, gray, ang = page.deskew(bw, gray)
-
     segs = detect.detect_segments(bw, min_len=min_len)
     boxes = detect.text_boxes(bw) if do_ocr and solve.HAS_OCR else []
     H0, W0 = bw.shape
@@ -96,9 +76,9 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     ocr_k = None if up > 1 else (2,)
     numbers = (solve.ocr_numbers(bw, scales=ocr_k)
                if (do_ocr and solve.HAS_OCR) else [])
+    numbers = dedup_numbers(numbers)
     dims = solve.build_dims(numbers, segs)
     cal = solve.calibrate(dims)
-
     if scale_override:
         scale = float(scale_override)
         source = "задан вручную"
@@ -110,7 +90,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
     else:
         scale = 1.0
         source = "не определён, координаты в пикселях"
-
     if scale != 1.0:
         good = solve.refine_dims(numbers, segs, scale)
         if not good and cal:
@@ -127,23 +106,18 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         if cal and not cal.get("single"):
             k2 = solve.calibrate(good) if len(good) >= 2 else None
             larger_repeat_cluster = (
-                k2 is not None
-                and k2.get("n", 0) > cal.get("n", 0)
+                k2 is not None and k2.get("n", 0) > cal.get("n", 0)
                 and k2.get("policy") == "anchor-repeat-large"
-                and k2.get("rms", float("inf")) <= 25.0
-            )
+                and k2.get("rms", float("inf")) <= 25.0)
             if (k2 and (k2["rms"] <= cal["rms"] + 0.5 or larger_repeat_cluster)
                     and not scale_override):
                 scale = k2["scale"]
                 cal = k2
-                source = (f'подобран по {k2["n"]} размерам, '
-                          f'СКО {k2["rms"]} мм')
+                source = f'подобран по {k2["n"]} размерам, СКО {k2["rms"]} мм'
                 good = solve.refine_dims(numbers, segs, scale)
     else:
         good = []
-
     used_dims = _calibration_dims(good, cal)
-
     model = assemble.build_model(segs, circles, good, numbers, scale,
                                  gray.shape[0], arcs=arcs)
     opts = []
@@ -155,7 +129,6 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
         seen.add(k)
         opts.append({"value": d.value, "px": round(d.b - d.a, 1),
                      "scale": round(d.value / (d.b - d.a), 5)})
-
     lens, seen_len = [], set()
     for x in sorted(segs, key=lambda x: -x.length):
         if x.role == "leader" or x.length < 20:
@@ -169,16 +142,13 @@ def vectorize(path, dpi=200, page_no=0, min_len=25, do_ocr=True,
                      "role": x.role})
         if len(lens) >= 12:
             break
-
     return {"gray": gray, "bw": bw, "segments": segs, "circles": circles,
             "arcs": arcs, "line_options": lens, "has_ocr": solve.HAS_OCR,
-            "upscale": up,
-            "numbers": numbers, "dims": dims, "used_dims": used_dims,
-            "all_dims": good,
-            "calib": cal, "options": opts, "scale": scale,
-            "scale_source": source, "deskew": round(ang, 2),
-            "weight_threshold": round(thr, 2), "model": model,
-            "size": (gray.shape[1], gray.shape[0])}
+            "upscale": up, "numbers": numbers, "dims": dims,
+            "used_dims": used_dims, "all_dims": good, "calib": cal,
+            "options": opts, "scale": scale, "scale_source": source,
+            "deskew": round(ang, 2), "weight_threshold": round(thr, 2),
+            "model": model, "size": (gray.shape[1], gray.shape[0])}
 
 
 def _in_text(s, boxes, grow=2.0):
@@ -210,21 +180,17 @@ def overlay_png(res, max_side=1500):
         cv2.line(img, (int(s.x1), int(s.y1)), (int(s.x2), int(s.y2)), c, w)
     for a in res.get("arcs", ()):
         cv2.ellipse(img, (int(a.cx), int(a.cy)), (int(a.r), int(a.r)), 0,
-                    math.degrees(a.a0),
-                    math.degrees(a.a0) + math.degrees(a.sweep()),
+                    math.degrees(a.a0), math.degrees(a.a0) + math.degrees(a.sweep()),
                     (40, 120, 240), 2)
     for c in res["circles"]:
         cv2.circle(img, (int(c.cx), int(c.cy)), int(round(c.r)), (30, 170, 30), 2)
-        cv2.drawMarker(img, (int(c.cx), int(c.cy)), (30, 170, 30),
-                       cv2.MARKER_CROSS, 10, 1)
+        cv2.drawMarker(img, (int(c.cx), int(c.cy)), (30, 170, 30), cv2.MARKER_CROSS, 10, 1)
     used = {id(d.num) for d in res["used_dims"] if d.num is not None}
     for nb in res["numbers"]:
         c = (0, 140, 255) if id(nb) in used else (170, 60, 200)
         x, y = int(nb.x - nb.w / 2), int(nb.y - nb.h / 2)
-        cv2.rectangle(img, (x - 2, y - 2), (x + int(nb.w) + 2,
-                                            y + int(nb.h) + 2), c, 2)
-        cv2.putText(img, str(nb.value), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, c, 1, cv2.LINE_AA)
+        cv2.rectangle(img, (x - 2, y - 2), (x + int(nb.w) + 2, y + int(nb.h) + 2), c, 2)
+        cv2.putText(img, str(nb.value), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1, cv2.LINE_AA)
     h, w = img.shape[:2]
     if max(h, w) > max_side:
         f = max_side / max(h, w)
@@ -243,17 +209,13 @@ def summary(res):
         f'лист: {res["size"][0]}x{res["size"][1]} px'
         + (f' (увеличен x{res["upscale"]})' if res.get("upscale", 1) > 1 else "")
         + f', перекос {res["deskew"]}°',
-        f'линии: контур {roles.get("contour", 0)}, тонкие '
-        f'{roles.get("thin", 0)}, осевые {roles.get("center", 0)}, '
-        f'наклонные {roles.get("leader", 0)}   '
+        f'линии: контур {roles.get("contour", 0)}, тонкие {roles.get("thin", 0)}, '
+        f'осевые {roles.get("center", 0)}, наклонные {roles.get("leader", 0)} '
         f'(порог толщины {res["weight_threshold"]} px)',
-        f'отверстий: {len(res["circles"])}   дуг: {len(res["arcs"])}   '
-        f'чисел: {len(res["numbers"])}',
-        f'масштаб: {res["scale"]:.4f} мм/px ({res["scale_source"]})',
-        "",
-        f'модель: замкнутых контуров {len(m.polys)}, отдельных линий '
-        f'{len(m.lines)}, окружностей {len(m.circles)}, дуг {len(m.arcs)}, '
-        f'размеров DIMENSION {len(m.dims)}',
+        f'отверстий: {len(res["circles"])}   дуг: {len(res["arcs"])}   чисел: {len(res["numbers"])}',
+        f'масштаб: {res["scale"]:.4f} мм/px ({res["scale_source"]})', "",
+        f'модель: замкнутых контуров {len(m.polys)}, отдельных линий {len(m.lines)}, '
+        f'окружностей {len(m.circles)}, дуг {len(m.arcs)}, размеров DIMENSION {len(m.dims)}',
     ]
     if not res.get("has_ocr", True):
         out += ["", "Движок tesseract не установлен, числа с чертежа не читаются.",
@@ -264,18 +226,14 @@ def summary(res):
         out += ["", "сверка размеров, по которым подобран масштаб:",
                 f'{"размер":>8} {"px":>8} {"расчёт":>8} {"невязка":>9}']
         for mm in c["matches"]:
-            out.append(f'{mm["value"]:>8} {mm["px"]:>8} {mm["mm"]:>8} '
-                       f'{mm["resid"]:>+9}')
+            out.append(f'{mm["value"]:>8} {mm["px"]:>8} {mm["mm"]:>8} {mm["resid"]:+9}')
         if c["rejected"]:
             out.append(f'не вошли в кластер: {c["rejected"]}')
     elif res["numbers"]:
-        out += ["", "масштаб подобрать не удалось: числа не легли в общий "
-                "кластер. Задайте масштаб вручную."]
+        out += ["", "масштаб подобрать не удалось: числа не легли в общий кластер. Задайте масштаб вручную."]
     if rep.get("constraints"):
         bad = [r for r in rep["resid"] if abs(r[3]) > 0.05]
-        out += ["", f'притянуто координат: {rep["clusters_x"]} по X, '
-                f'{rep["clusters_y"]} по Y при {rep["constraints"]} '
-                f'ограничениях от размеров',
+        out += ["", f'притянуто координат: {rep["clusters_x"]} по X, {rep["clusters_y"]} по Y при {rep["constraints"]} ограничениях от размеров',
                 f'ограничений с невязкой > 0.05 мм: {len(bad)}']
     if rep.get("unmatched"):
         out.append(f'размеры без привязки к линиям: {rep["unmatched"]}')
