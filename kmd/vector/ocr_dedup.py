@@ -27,6 +27,9 @@ def _duplicate(a, b, center_tol=20.0):
 
     dx = abs(float(a.x) - float(b.x))
     dy = abs(float(a.y) - float(b.y))
+    # Tesseract can return one horizontal and one vertical box for the same
+    # glyph string. Use the larger dimension of the two boxes as a local
+    # tolerance rather than a global 12 px magic number.
     tol_x = max(center_tol, 0.45 * max(float(a.w), float(b.w)))
     tol_y = max(center_tol, 0.45 * max(float(a.h), float(b.h)))
     return dx <= tol_x and dy <= tol_y
