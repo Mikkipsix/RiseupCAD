@@ -13,7 +13,9 @@ def build_dimension_topology(dims, segs, scale=1.0, position_tol=6.0, span_tol=1
     out = []
     for di, d in enumerate(dims):
         vertical_dim = bool(d.vertical)
-        want = "v" if vertical_dim else "h"
+        # A horizontal dimension is supported by vertical witness lines;
+        # a vertical dimension is supported by horizontal witness lines.
+        want = "h" if vertical_dim else "v"
         line = float(d.line)
         a, b = sorted((float(d.a), float(d.b)))
         target = float(d.value) / float(scale) if scale else None
