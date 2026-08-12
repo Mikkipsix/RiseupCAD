@@ -2,9 +2,9 @@ name: RiseupCAD E2E
 
 on:
   pull_request:
-    branches: [drawning10, dimension-pairing-v7]
+    branches: [drawning10, dimension-pairing-v7, ocr-dedup-v2]
   push:
-    branches: [drawning10, dimension-pairing-v6, dimension-pairing-v7, robust-dimension-selection-v8]
+    branches: [drawning10, dimension-pairing-v6, dimension-pairing-v7, robust-dimension-selection-v8, ocr-dedup-v2, integration-topology-e2e-v1]
 
 jobs:
   test:
